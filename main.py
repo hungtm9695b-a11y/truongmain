@@ -160,7 +160,7 @@ async def analyze(
     ]
 
     vision_res = client.responses.create(
-        model="gpt-4.1-vision-preview",
+        model="gpt-4o-mini",
         input=vision_input
     )
     ecg_text = vision_res.output_text
@@ -175,7 +175,7 @@ async def analyze(
     )
 
     clinical_res = client.responses.create(
-        model="gpt-4.1-mini",
+        model="gpt-4o-mini",
         input=clinical_prompt
     )
 
@@ -192,7 +192,7 @@ async def analyze(
     )
 
     fusion_res = client.responses.create(
-        model="gpt-4.1-mini",
+        model="gpt-4o-mini",
         input=fusion_prompt
     )
 
