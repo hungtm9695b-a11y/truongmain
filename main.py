@@ -1,8 +1,9 @@
-# ============================
-#  AI ECG BACKEND - FULL main.py (FINAL VERSION)
-#  By ChatGPT - optimized for ESC 2023 acute chest pain workflow
-# ============================
+# ============================================================
+#  AI ECG BACKEND - FULL main.py (FINAL VERSION FOR RENDER)
+#  Lấy API key từ biến môi trường OPENAI_API_KEY
+# ============================================================
 
+import os
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -12,7 +13,7 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# CORS setup
+# CORS cho phép frontend gọi API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,58 +21,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# lấy API key từ biến môi trường (Render yêu cầu CÁCH NÀY)
 client = OpenAI(api_key=os.getenv("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"))
 
 # ============================================================
-# 1) VISION PROMPT – ĐỌC ECG NHƯ CHUYÊN GIA TIM MẠCH ESC
+# 1) VISION PROMPT – ĐỌC ECG CHUẨN ESC
 # ============================================================
 
 VISION_PROMPT = """
 Bạn là chuyên gia tim mạch theo chuẩn ESC 2023.
 Hãy đọc ảnh ECG (dạng chụp giấy) với độ chính xác cao nhất:
 
-PHÂN TÍCH CHI TIẾT (nhưng diễn giải gọn):
+PHÂN TÍCH CHI TIẾT:
 - Nhịp: xoang / nhanh / chậm / ngoại tâm thu / rung nhĩ / cuồng nhĩ / block AV
-- Block dẫn truyền: RBBB, LBBB, hemiblock
-- Trục điện tim (axis)
+- Block: RBBB, LBBB, hemiblock
+- Trục điện tim
 - QRS, QTc (ước tính)
-- ST segment từng đạo trình:
-  + ST chênh lên (số mm + đạo trình + vùng)
+- ST segment:
+  + ST chênh lên (mm + đạo trình + vùng)
   + ST chênh xuống (mm + đạo trình)
   + Sóng T âm / sâu / đối xứng
   + Q bệnh lý
-- Nhận diện STEMI theo vùng:
-  + Trước, trước bên, bên, dưới, sau, thất phải
-- Nhận diện “STEMI tương đương”:
-  + ST chênh xuống V1–V3 gợi ý thành sau
-  + T đảo sâu đối xứng trong thiếu máu nặng
-  + LBBB mới + tiêu chuẩn Sgarbossa
-  + RBBB kèm ST thay đổi
+- Nhận diện STEMI theo vùng
+- Nhận diện STEMI tương đương (posterior MI, Sgarbossa, Wellens…)
 
-XUẤT KẾT LUẬN NGẮN GỌN:
+KẾT LUẬN NGẮN GỌN (1–2 câu):
 - Nhịp
 - Bất thường ST–T
-- Có/Không STEMI hoặc ACS
+- Có/Không dấu STEMI/NSTEMI
 - Vị trí tổn thương nếu có
 """
 
-
 # ============================================================
-# 2) CLINICAL PROMPT – PHÂN LOẠI TRIỆU CHỨNG THEO ESC
+# 2) CLINICAL PROMPT ESC
 # ============================================================
 
 CLINICAL_PROMPT = """
 Bạn là chuyên gia tim mạch theo ESC 2023.
 
-Dữ liệu bệnh nhân:
-Tuổi: {age}
-Giới: {sex}
-SBP: {sbp}
-DBP: {dbp}
-Mạch: {hr}
-SpO2: {spo2}
-
-TRIỆU CHỨNG (checkbox):
+TRIỆU CHỨNG theo ESC:
 - Vị trí: {loc}
 - Tính chất: {quality}
 - Khởi phát: {trigger}
@@ -80,20 +68,16 @@ TRIỆU CHỨNG (checkbox):
 - Diễn tiến: {dynamic}
 - Không do tim: {noncardiac}
 
-HEAR Score (tham khảo): {hear_score} – mức {hear_level}
+ESC CRITERIA (0–3): {esc_criteria}
 
-ESC CRITERIA: {esc_criteria}
-
-PHÂN LOẠI CHUẨN ESC:
+PHÂN LOẠI:
 - 3 tiêu chí → "dien_hinh"
 - 2 tiêu chí → "khong_dien_hinh"
 - 0–1 tiêu chí → "it_goi_y"
-- Thiếu dữ liệu → "khong_co_du_lieu"
 
-Chỉ trả về duy nhất một trong bốn:
-"dien_hinh", "khong_dien_hinh", "it_goi_y", "khong_co_du_lieu"
+Chỉ trả về duy nhất một từ:
+"dien_hinh", "khong_dien_hinh", "it_goi_y"
 """
-
 
 # ============================================================
 # 3) FUSION PROMPT – NGUY CƠ + CHẨN ĐOÁN + KHUYẾN CÁO
@@ -114,21 +98,18 @@ NHIỆM VỤ:
 - "trung_binh"
 - "thap"
 
-2) Chẩn đoán gợi ý (1 câu, cụ thể nhưng gọn):
-- Nguy cơ cao: “ACS nguy cơ cao, phù hợp STEMI/NSTEMI; cần xử trí khẩn.”
-- Trung bình: “Nghi ACS nguy cơ trung bình; cần theo dõi ECG + troponin động học.”
-- Thấp: “Đau ngực nguy cơ thấp; khả năng ACS thấp.”
+2) Chẩn đoán gợi ý: 1 câu ngắn, chuẩn ESC
 
-3) Khuyến cáo (đúng 2 câu, cụ thể nhưng ngắn):
+3) Khuyến cáo (2 câu):
 - Nguy cơ cao:
-  1. “Chuyển ngay cơ sở có PCI 24/7 và duy trì monitoring.”
-  2. “Ưu tiên PCI khẩn; không trì hoãn điều trị.”
+  1. “Chuyển ngay cơ sở PCI 24/7.”
+  2. “Không trì hoãn tái thông mạch.”
 - Trung bình:
-  1. “Theo dõi ECG, huyết động và troponin động học 0–1h.”
-  2. “Nhập viện nếu triệu chứng còn hoặc troponin tăng.”
+  1. “Theo dõi ECG + troponin động học.”
+  2. “Nhập viện nếu triệu chứng còn.”
 - Thấp:
-  1. “Có thể xuất viện an toàn kèm hướng dẫn theo dõi.”
-  2. “Quay lại ngay nếu đau ngực tái phát hoặc có dấu hiệu cảnh báo.”
+  1. “Có thể theo dõi ngoại trú.”
+  2. “Quay lại ngay nếu đau tăng.”
 
 TRẢ VỀ JSON:
 {
@@ -137,7 +118,6 @@ TRẢ VỀ JSON:
   "khuyen_cao": ["...", "..."]
 }
 """
-
 
 # ============================================================
 # BACKEND API
@@ -160,8 +140,6 @@ async def analyze(
     dynamic: str = Form("none"),
     noncardiac: str = Form("none"),
     esc_criteria: str = Form("none"),
-    hear_score: str = Form("none"),
-    hear_level: str = Form("none")
 ):
 
     # ======================
@@ -175,7 +153,7 @@ async def analyze(
         {
             "role": "user",
             "content": [
-                {"type": "input_text", "text": "Phân tích ECG sau:"},
+                {"type": "input_text", "text": "Đọc ECG sau:"},
                 {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
             ]
         }
@@ -191,13 +169,9 @@ async def analyze(
     # 2) TRIỆU CHỨNG ESC
     # ============================
     clinical_prompt = CLINICAL_PROMPT.format(
-        age=age, sex=sex, sbp=sbp, dbp=dbp,
-        hr=hr, spo2=spo2,
         loc=loc, quality=quality, trigger=trigger,
         relief=relief, assoc=assoc, dynamic=dynamic,
-        noncardiac=noncardiac,
-        esc_criteria=esc_criteria,
-        hear_score=hear_score, hear_level=hear_level
+        noncardiac=noncardiac, esc_criteria=esc_criteria
     )
 
     clinical_res = client.responses.create(
@@ -206,8 +180,8 @@ async def analyze(
     )
 
     symptom_type = clinical_res.output_text.strip()
-    if symptom_type not in ["dien_hinh", "khong_dien_hinh", "it_goi_y", "khong_co_du_lieu"]:
-        symptom_type = "khong_co_du_lieu"
+    if symptom_type not in ["dien_hinh", "khong_dien_hinh", "it_goi_y"]:
+        symptom_type = "it_goi_y"
 
     # ============================
     # 3) FUSION ESC
@@ -238,9 +212,8 @@ async def analyze(
         "khuyen_cao": fusion_json["khuyen_cao"]
     }
 
-
 # ============================================================
-# RUN BACKEND
+# RUN LOCAL
 # ============================================================
 
 if __name__ == "__main__":
