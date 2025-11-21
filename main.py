@@ -1,14 +1,10 @@
-# ============================================================
-#  AI ECG BACKEND - FINAL VERSION (GPT-4o VISION + ESC FIXED)
-# ============================================================
-
 import os
-from fastapi import FastAPI, UploadFile, Form
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 import base64
 import json
+from fastapi import FastAPI, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+import uvicorn
 
 app = FastAPI()
 
@@ -28,22 +24,21 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ============================================================
 
 VISION_PROMPT = """
-Bạn là chuyên gia tim mạch theo chuẩn ESC 2023.
-Hãy đọc ECG chụp giấy và trả về phân tích chính xác:
-- Nhịp, block nhánh, trục
+Bạn là chuyên gia tim mạch theo ESC 2023.
+Hãy đọc ECG chụp giấy và trả về:
+- Nhịp
+- Block
+- Trục
 - QRS, QTc
-- ST chênh lên / xuống (mm + đạo trình)
-- Sóng T bất thường
+- ST chênh lên / chênh xuống
+- Sóng T
 - Q bệnh lý
-- Gợi ý STEMI theo vùng
-- STEMI tương đương
-Kết luận cuối 1–2 câu.
+- Gợi ý STEMI/NSTEMI
+Kết luận 1–2 câu.
 """
 
 CLINICAL_PROMPT = """
-Bạn là chuyên gia tim mạch ESC 2023.
-
-Triệu chứng:
+Triệu chứng theo ESC:
 - Vị trí: {loc}
 - Tính chất: {quality}
 - Khởi phát: {trigger}
@@ -54,36 +49,32 @@ Triệu chứng:
 
 ESC criteria: {esc_criteria}
 
-Quy tắc phân loại:
-- 3 tiêu chí → "dien_hinh"
-- 2 tiêu chí → "khong_dien_hinh"
-- 0–1 → "it_goi_y"
+Phân loại:
+- 3 tiêu chí → dien_hinh
+- 2 tiêu chí → khong_dien_hinh
+- 0–1 → it_goi_y
 
-Chỉ trả về đúng 1 từ.
+Chỉ trả về 1 từ: dien_hinh / khong_dien_hinh / it_goi_y.
 """
 
-# ❗ JSON mẫu phải escape dấu ngoặc {}
+# JSON trong prompt phải escape {{ }}
 FUSION_PROMPT = """
-Bạn là chuyên gia cấp cứu tim mạch ESC 2023.
+Bạn là chuyên gia ESC.
 
 ECG:
 {ecg_text}
 
-Triệu chứng ESC:
+Triệu chứng:
 {symptom_type}
 
-YÊU CẦU:
-1) Phân loại nguy cơ: "cao", "trung_binh", "thap"
-2) Chẩn đoán gợi ý: 1 câu
-3) Khuyến cáo (2 câu)
-
-Trả về JSON:
+Hãy trả về JSON:
 {{
  "muc_nguy_co": "...",
  "chan_doan_goi_y": "...",
  "khuyen_cao": ["...", "..."]
 }}
 """
+
 
 # ============================================================
 # API
@@ -92,12 +83,6 @@ Trả về JSON:
 @app.post("/api/analyze")
 async def analyze(
     ecg_file: UploadFile,
-    age: str = Form("none"),
-    sex: str = Form("none"),
-    sbp: str = Form("none"),
-    dbp: str = Form("none"),
-    hr: str = Form("none"),
-    spo2: str = Form("none"),
     loc: str = Form("none"),
     quality: str = Form("none"),
     trigger: str = Form("none"),
@@ -107,12 +92,13 @@ async def analyze(
     noncardiac: str = Form("none"),
     esc_criteria: str = Form("none"),
 ):
+    # ------------------------------
+    # 1) Vision: đọc ECG bằng GPT-4o
+    # ------------------------------
+    raw = await ecg_file.read()
+    b64 = base64.b64encode(raw).decode()
 
-    # ====================== ECG Vision ======================
-    content = await ecg_file.read()
-    b64 = base64.b64encode(content).decode()
-
-    vision_input = [
+    vision_payload = [
         {"role": "system", "content": VISION_PROMPT},
         {
             "role": "user",
@@ -125,27 +111,32 @@ async def analyze(
 
     vision_res = client.responses.create(
         model="gpt-4o",
-        input=vision_input
+        input=vision_payload
     )
+
     ecg_text = vision_res.output_text.strip()
 
-    # ====================== Clinical ========================
+    # ------------------------------
+    # 2) Triệu chứng ESC
+    # ------------------------------
     clinical_prompt = CLINICAL_PROMPT.format(
         loc=loc, quality=quality, trigger=trigger,
         relief=relief, assoc=assoc, dynamic=dynamic,
         noncardiac=noncardiac, esc_criteria=esc_criteria
     )
 
-    clin_res = client.responses.create(
+    clinical_res = client.responses.create(
         model="gpt-4o-mini",
         input=clinical_prompt
     )
 
-    symptom_type = clin_res.output_text.strip()
+    symptom_type = clinical_res.output_text.strip()
     if symptom_type not in ["dien_hinh", "khong_dien_hinh", "it_goi_y"]:
         symptom_type = "it_goi_y"
 
-    # ====================== Fusion ESC ======================
+    # ------------------------------
+    # 3) Fusion ESC (risk + dx + rec)
+    # ------------------------------
     fusion_prompt = FUSION_PROMPT.format(
         ecg_text=ecg_text,
         symptom_type=symptom_type
@@ -158,7 +149,9 @@ async def analyze(
 
     fusion_json = json.loads(fusion_res.output_text)
 
-    # ====================== OUTPUT ==========================
+    # ------------------------------
+    # 4) Final output
+    # ------------------------------
     return {
         "ecg": ecg_text,
         "phan_loai_trieu_chung": symptom_type,
@@ -168,9 +161,6 @@ async def analyze(
     }
 
 
-# ============================================================
-# RUN LOCAL
-# ============================================================
-
+# Local run
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
