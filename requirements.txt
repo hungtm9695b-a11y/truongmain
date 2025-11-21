@@ -1,5 +1,4 @@
+openai
 fastapi
 uvicorn
-python-multipart
-openai
-reportlab
+pydantic
