@@ -1,11 +1,12 @@
 import os
 import base64
-import json
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
-import uvicorn
 
+# ==========================
+# FastAPI + CORS
+# ==========================
 app = FastAPI()
 
 app.add_middleware(
@@ -15,155 +16,151 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==========================
+# OpenAI Client
+# ==========================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ==========================
 # PROMPTS
 # ==========================
 
-VISION_PROMPT = """
-Bạn là chuyên gia tim mạch theo ESC 2023.
-Đọc ECG chụp giấy và mô tả chi tiết:
+ECG_PROMPT = """
+Bạn là bác sĩ tim mạch chuyên sâu theo ESC 2024 + ACC/AHA 2021.
+Phân tích ECG theo 7 bước chuẩn:
+- Tần số
 - Nhịp
 - Trục
-- QRS, QTc
-- Block
-- ST chênh / ST giảm
-- Sóng T
-- Q bệnh lý
-Gợi ý STEMI / NSTEMI.
+- PR–QRS–QTc
+- Sóng P
+- QRS: block, rộng/hẹp
+- ST–T: ST chênh lên/giảm, T đảo, Q bệnh lý
+
+Trọng tâm đánh giá thiếu máu cơ tim: STEMI theo vùng (trước, vách, bên, dưới), NSTEMI, thiếu máu cơ tim có thể.
+
+Trả về JSON:
+{
+  "ecg_analysis": "...",
+  "ischemia_risk": { "level": "Thấp/Trung bình/Cao", "reason": "..." },
+  "final_ecg_conclusion": "1–2 câu."
+}
 """
 
 CLINICAL_PROMPT = """
-Dựa vào triệu chứng ESC:
+Bạn là bác sĩ tim mạch theo ESC 2024.
+Dựa vào triệu chứng:
+1. Phân loại đau ngực: điển hình / không điển hình / không gợi ý thiếu máu cơ tim.
+2. Phân tầng nguy cơ: thấp / trung bình / cao.
+3. Kết hợp dữ liệu ECG đã cung cấp.
 
-- Vị trí: {loc}
-- Tính chất: {quality}
-- Khởi phát: {trigger}
-- Giảm đau: {relief}
-- Kèm theo: {assoc}
-- Diễn tiến: {dynamic}
-- Không do tim: {noncardiac}
-
-ESC:
-- 3 tiêu chí → dien_hinh
-- 2 tiêu chí → khong_dien_hinh
-- 0–1 → it_goi_y
-
-Chỉ trả về duy nhất 1 từ:
-- dien_hinh
-- khong_dien_hinh
-- it_goi_y
+Trả về JSON:
+{
+  "clinical_summary": "...",
+  "combined_risk_level": "...",
+  "reason": "...",
+  "recommendations": [
+    { "title": "Khuyến cáo 1", "content": "2 câu" },
+    { "title": "Khuyến cáo 2", "content": "2 câu" },
+    { "title": "Khuyến cáo 3", "content": "2 câu" }
+  ]
+}
 """
 
-FUSION_PROMPT = """
-Bạn là chuyên gia tim mạch ESC 2023.
+FINAL_PROMPT = """
+Tổng hợp dữ liệu:
+ECG: {ECG_DATA}
+Lâm sàng: {CLINICAL_DATA}
 
-ECG phân tích:
-{ecg_text}
+Nhiệm vụ:
+- Phân tầng nguy cơ thiếu máu cơ tim (Thấp/Trung bình/Cao)
+- Kết luận 1–2 câu
+- 3 khuyến cáo đúng chuẩn ESC (mỗi khuyến cáo 2 câu)
 
-Triệu chứng:
-{symptom_type}
-
-Hãy đánh giá ESC:
-- Nguy cơ: thấp / trung bình / cao
-- Chẩn đoán gợi ý
-- 2 khuyến cáo ngắn gọn chuẩn ESC.
-
-Trả về JSON DUY NHẤT:
-{{
- "muc_nguy_co": "",
- "chan_doan_goi_y": "",
- "khuyen_cao": ["", ""]
-}}
+Trả về JSON:
+{
+  "ecg": "...",
+  "clinical": "...",
+  "risk_level": "...",
+  "conclusion": "...",
+  "recommendations": [
+    { "title": "Khuyến cáo 1", "content": "2 câu" },
+    { "title": "Khuyến cáo 2", "content": "2 câu" },
+    { "title": "Khuyến cáo 3", "content": "2 câu" }
+  ]
+}
 """
 
+# ==========================
+# API 1 — PHÂN TÍCH ECG
+# ==========================
+@app.post("/analyze-ecg")
+async def analyze_ecg(ecg_file: UploadFile):
 
-@app.post("/api/analyze")
-async def analyze(
-    ecg_file: UploadFile,
-    loc: str = Form("none"),
-    quality: str = Form("none"),
-    trigger: str = Form("none"),
-    relief: str = Form("none"),
-    assoc: str = Form("none"),
-    dynamic: str = Form("none"),
-    noncardiac: str = Form("none"),
+    image_bytes = await ecg_file.read()
+    b64 = base64.b64encode(image_bytes).decode()
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": ECG_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{b64}"
+                    }
+                ]
+            }
+        ],
+        temperature=0.1,
+    )
+
+    return response.choices[0].message["content"]
+
+
+# ==========================
+# API 2 — LÂM SÀNG + TỔNG HỢP
+# ==========================
+@app.post("/analyze-clinical")
+async def analyze_clinical(
+    ecg_data: str = Form(...),
+    symptoms: str = Form(...)
 ):
 
-    # ==========================
-    # 1) Vision: đọc ECG
-    # ==========================
-    raw = await ecg_file.read()
-    b64 = base64.b64encode(raw).decode()
-
-    vision_input = [
-        {"role": "system", "content": VISION_PROMPT},
-        {"role": "user", "content": [
-            {"type": "input_text", "text": "Đọc ECG sau:"},
-            {
-                "type": "input_image",
-                "image": {"base64": b64}       # **** FIX LỖI QUAN TRỌNG ****
-            }
-        ]}
-    ]
-
-    vision_res = client.responses.create(
-        model="gpt-4o",
-        input=vision_input,
-    )
-
-    # Đọc text đúng format SDK mới
-    ecg_text = vision_res.output[0].content[0].text.strip()
-
-    # ==========================
-    # 2) Triệu chứng
-    # ==========================
-    clinical_prompt = CLINICAL_PROMPT.format(
-        loc=loc, quality=quality, trigger=trigger,
-        relief=relief, assoc=assoc, dynamic=dynamic, noncardiac=noncardiac
-    )
-
-    clinical_res = client.responses.create(
+    # --- Bước 1: phân tích lâm sàng ---
+    clinical_step = client.chat.completions.create(
         model="gpt-4o-mini",
-        input=clinical_prompt
+        messages=[
+            {"role": "system", "content": CLINICAL_PROMPT},
+            {"role": "user", "content": symptoms},
+            {"role": "user", "content": f"ECG: {ecg_data}"}
+        ],
+        temperature=0.1,
     )
 
-    symptom_type = clinical_res.output_text.strip()
-    if symptom_type not in ["dien_hinh", "khong_dien_hinh", "it_goi_y"]:
-        symptom_type = "it_goi_y"
+    clinical_json = clinical_step.choices[0].message["content"]
 
-    # ==========================
-    # 3) Fusion JSON ESC
-    # ==========================
-    fusion_prompt = FUSION_PROMPT.format(
-        ecg_text=ecg_text,
-        symptom_type=symptom_type
+    # --- Bước 2: tổng hợp ---
+    final_prompt_filled = FINAL_PROMPT \
+        .replace("{ECG_DATA}", ecg_data) \
+        .replace("{CLINICAL_DATA}", clinical_json)
+
+    final_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": final_prompt_filled},
+            {"role": "user", "content": "Tạo JSON cuối cùng."}
+        ],
+        temperature=0.1,
     )
 
-    fusion_res = client.responses.create(
-        model="gpt-4o",
-        input=fusion_prompt,
-        response_format={"type": "json_object"}
-    )
-
-    try:
-        fusion_json = json.loads(fusion_res.output_text)
-    except:
-        fusion_json = {
-            "muc_nguy_co": "không xác định",
-            "chan_doan_goi_y": "",
-            "khuyen_cao": ["", ""]
-        }
-
-    return {
-        "ecg": ecg_text,
-        "phan_loai_trieu_chung": symptom_type,
-        "muc_nguy_co": fusion_json.get("muc_nguy_co", ""),
-        "chan_doan_goi_y": fusion_json.get("chan_doan_goi_y", ""),
-        "khuyen_cao": fusion_json.get("khuyen_cao", []),
-    }
+    return final_response.choices[0].message["content"]
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# ==========================
+# TEST ROOT
+# ==========================
+@app.get("/")
+def home():
+    return {"message": "ECG AI API is running"}
