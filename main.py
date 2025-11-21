@@ -1,5 +1,5 @@
 # ============================================================
-#  AI ECG BACKEND - FULL main.py (FINAL FOR RENDER)
+#  AI ECG BACKEND - FINAL VERSION FOR RENDER (GPT-4o VISION)
 # ============================================================
 
 import os
@@ -20,7 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# lấy API key từ biến môi trường
+# OpenAI client – API key từ Environment (Render)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================
@@ -29,24 +29,23 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 VISION_PROMPT = """
 Bạn là chuyên gia tim mạch theo chuẩn ESC 2023.
-Hãy đọc ECG chụp giấy:
+Hãy đọc ECG chụp giấy và trả về phân tích chính xác:
 
-PHÂN TÍCH:
 - Nhịp
 - Block nhánh
-- Trục
-- QRS, QTc
-- ST chênh lên / xuống
+- Trục điện tim
+- QRS, QTc (ước tính)
+- ST chênh lên / xuống (mm + đạo trình)
 - Sóng T bất thường
 - Q bệnh lý
-- STEMI theo vùng
-- STEMI tương đương
+- Gợi ý STEMI theo vùng
+- STEMI tương đương (Wellens, posterior MI…)
 
-Kết luận ngắn 1–2 câu.
+Kết luận cuối: 1–2 câu, ngắn gọn, rõ ràng.
 """
 
 CLINICAL_PROMPT = """
-Bạn là chuyên gia tim mạch ESC 2023.
+Bạn là chuyên gia tim mạch theo ESC 2023.
 
 Triệu chứng:
 - Vị trí: {loc}
@@ -59,12 +58,12 @@ Triệu chứng:
 
 ESC criteria: {esc_criteria}
 
-Quy tắc:
+Quy tắc phân loại:
 - 3 tiêu chí → "dien_hinh"
 - 2 tiêu chí → "khong_dien_hinh"
-- 0–1 → "it_goi_y"
+- 0–1 tiêu chí → "it_goi_y"
 
-Chỉ trả về 1 từ.
+Chỉ trả về đúng 1 từ.
 """
 
 FUSION_PROMPT = """
@@ -76,21 +75,33 @@ ECG:
 Triệu chứng ESC:
 {symptom_type}
 
-NHIỆM VỤ:
+YÊU CẦU:
 1) Phân loại nguy cơ: "cao", "trung_binh", "thap"
 2) Chẩn đoán gợi ý: 1 câu
-3) Khuyến cáo (2 câu) theo mức nguy cơ
+3) Khuyến cáo (2 câu):
+
+- Nguy cơ cao:
+  1. “Chuyển ngay cơ sở PCI 24/7.”
+  2. “Không trì hoãn tái thông mạch.”
+
+- Nguy cơ trung bình:
+  1. “Theo dõi ECG + troponin động học.”
+  2. “Nhập viện nếu triệu chứng còn.”
+
+- Nguy cơ thấp:
+  1. “Theo dõi ngoại trú.”
+  2. “Khám lại nếu đau tăng hoặc thay đổi tính chất.”
 
 Trả về JSON:
-{{
+{
  "muc_nguy_co": "...",
  "chan_doan_goi_y": "...",
  "khuyen_cao": ["...", "..."]
-}}
+}
 """
 
 # ============================================================
-# API
+# API /api/analyze
 # ============================================================
 
 @app.post("/api/analyze")
@@ -113,7 +124,7 @@ async def analyze(
 ):
 
     # ======================================================
-    # 1) Vision ECG
+    # 1) Vision ECG — GPT-4o
     # ======================================================
     content = await ecg_file.read()
     b64 = base64.b64encode(content).decode()
@@ -130,7 +141,7 @@ async def analyze(
     ]
 
     vision_res = client.responses.create(
-        model="gpt-4o-mini-vision",
+        model="gpt-4o",
         input=vision_input
     )
     ecg_text = vision_res.output_text
@@ -154,7 +165,7 @@ async def analyze(
         symptom_type = "it_goi_y"
 
     # ======================================================
-    # 3) Fusion ESC
+    # 3) Fusion ESC (Risk + Diagnosis + Recommendation)
     # ======================================================
     fusion_prompt = FUSION_PROMPT.format(
         ecg_text=ecg_text,
@@ -169,7 +180,7 @@ async def analyze(
     fusion_json = json.loads(fusion_res.output_text)
 
     # ======================================================
-    # 4) OUTPUT
+    # 4) OUTPUT JSON
     # ======================================================
 
     return {
