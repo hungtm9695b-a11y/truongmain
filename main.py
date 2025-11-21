@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 # lấy API key từ biến môi trường (Render yêu cầu CÁCH NÀY)
-client = OpenAI(api_key=os.getenv("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"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================
 # 1) VISION PROMPT – ĐỌC ECG CHUẨN ESC
