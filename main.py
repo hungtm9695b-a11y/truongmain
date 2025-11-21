@@ -20,7 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key="YOUR_API_KEY")
+client = OpenAI(api_key=os.getenv("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"))
 
 # ============================================================
 # 1) VISION PROMPT – ĐỌC ECG NHƯ CHUYÊN GIA TIM MẠCH ESC
