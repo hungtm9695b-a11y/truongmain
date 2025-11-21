@@ -1,6 +1,5 @@
 # ============================================================
 #  AI ECG BACKEND - FULL main.py (FINAL VERSION FOR RENDER)
-#  Lấy API key từ biến môi trường OPENAI_API_KEY
 # ============================================================
 
 import os
@@ -13,7 +12,7 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# CORS cho phép frontend gọi API
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,20 +20,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# lấy API key từ biến môi trường (Render yêu cầu CÁCH NÀY)
+# OpenAI client – LẤY KEY TỪ ENV
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================
-# 1) VISION PROMPT – ĐỌC ECG CHUẨN ESC
+# 1. VISION PROMPT
 # ============================================================
 
 VISION_PROMPT = """
 Bạn là chuyên gia tim mạch theo chuẩn ESC 2023.
-Hãy đọc ảnh ECG (dạng chụp giấy) với độ chính xác cao nhất:
+Hãy đọc ECG chụp giấy với độ chính xác cao nhất.
 
 PHÂN TÍCH CHI TIẾT:
 - Nhịp: xoang / nhanh / chậm / ngoại tâm thu / rung nhĩ / cuồng nhĩ / block AV
-- Block: RBBB, LBBB, hemiblock
+- Block nhánh: RBBB, LBBB, hemiblock
 - Trục điện tim
 - QRS, QTc (ước tính)
 - ST segment:
@@ -43,28 +42,28 @@ PHÂN TÍCH CHI TIẾT:
   + Sóng T âm / sâu / đối xứng
   + Q bệnh lý
 - Nhận diện STEMI theo vùng
-- Nhận diện STEMI tương đương (posterior MI, Sgarbossa, Wellens…)
+- STEMI tương đương: posterior MI, Wellens, Sgarbossa.
 
-KẾT LUẬN NGẮN GỌN (1–2 câu):
+KẾT LUẬN 1–2 câu:
 - Nhịp
-- Bất thường ST–T
-- Có/Không dấu STEMI/NSTEMI
-- Vị trí tổn thương nếu có
+- Tổn thương ST–T
+- Có/không gợi ý STEMI/NSTEMI
+- Vị trí tổn thương nếu có.
 """
 
 # ============================================================
-# 2) CLINICAL PROMPT ESC
+# 2. TRIỆU CHỨNG ESC
 # ============================================================
 
 CLINICAL_PROMPT = """
 Bạn là chuyên gia tim mạch theo ESC 2023.
 
-TRIỆU CHỨNG theo ESC:
+TRIỆU CHỨNG:
 - Vị trí: {loc}
 - Tính chất: {quality}
 - Khởi phát: {trigger}
 - Giảm đau: {relief}
-- Triệu chứng kèm: {assoc}
+- Kèm theo: {assoc}
 - Diễn tiến: {dynamic}
 - Không do tim: {noncardiac}
 
@@ -75,12 +74,12 @@ PHÂN LOẠI:
 - 2 tiêu chí → "khong_dien_hinh"
 - 0–1 tiêu chí → "it_goi_y"
 
-Chỉ trả về duy nhất một từ:
+Chỉ trả về 1 từ:
 "dien_hinh", "khong_dien_hinh", "it_goi_y"
 """
 
 # ============================================================
-# 3) FUSION PROMPT – NGUY CƠ + CHẨN ĐOÁN + KHUYẾN CÁO
+# 3. FUSION ESC (Risk + Diagnosis + Recommendation)
 # ============================================================
 
 FUSION_PROMPT = """
@@ -98,7 +97,7 @@ NHIỆM VỤ:
 - "trung_binh"
 - "thap"
 
-2) Chẩn đoán gợi ý: 1 câu ngắn, chuẩn ESC
+2) Chẩn đoán gợi ý: 1 câu ngắn.
 
 3) Khuyến cáo (2 câu):
 - Nguy cơ cao:
@@ -108,14 +107,14 @@ NHIỆM VỤ:
   1. “Theo dõi ECG + troponin động học.”
   2. “Nhập viện nếu triệu chứng còn.”
 - Thấp:
-  1. “Có thể theo dõi ngoại trú.”
+  1. “Theo dõi ngoại trú.”
   2. “Quay lại ngay nếu đau tăng.”
 
-TRẢ VỀ JSON:
+Trả về JSON:
 {
-  "muc_nguy_co": "...",
-  "chan_doan_goi_y": "...",
-  "khuyen_cao": ["...", "..."]
+ "muc_nguy_co": "...",
+ "chan_doan_goi_y": "...",
+ "khuyen_cao": ["...", "..."]
 }
 """
 
@@ -142,9 +141,9 @@ async def analyze(
     esc_criteria: str = Form("none"),
 ):
 
-    # ======================
-    # 1) ĐỌC ECG VISION
-    # ======================
+    # ======================================================
+    # 1) Đọc ảnh ECG bằng Vision
+    # ======================================================
     content = await ecg_file.read()
     b64 = base64.b64encode(content).decode()
 
@@ -153,8 +152,8 @@ async def analyze(
         {
             "role": "user",
             "content": [
-                {"type": "input_text", "text": "Đọc ECG sau:"},
-                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+                {"type": "text", "text": "Đọc ECG sau:"},
+                {"type": "image", "image_url": f"data:image/jpeg;base64,{b64}"}
             ]
         }
     ]
@@ -165,9 +164,9 @@ async def analyze(
     )
     ecg_text = vision_res.output_text
 
-    # ============================
-    # 2) TRIỆU CHỨNG ESC
-    # ============================
+    # ======================================================
+    # 2) Phân loại triệu chứng ESC
+    # ======================================================
     clinical_prompt = CLINICAL_PROMPT.format(
         loc=loc, quality=quality, trigger=trigger,
         relief=relief, assoc=assoc, dynamic=dynamic,
@@ -183,9 +182,9 @@ async def analyze(
     if symptom_type not in ["dien_hinh", "khong_dien_hinh", "it_goi_y"]:
         symptom_type = "it_goi_y"
 
-    # ============================
-    # 3) FUSION ESC
-    # ============================
+    # ======================================================
+    # 3) Fusion ESC Risk + Diagnosis + Recommendation
+    # ======================================================
     fusion_prompt = FUSION_PROMPT.format(
         ecg_text=ecg_text,
         symptom_type=symptom_type
@@ -198,22 +197,21 @@ async def analyze(
 
     fusion_json = json.loads(fusion_res.output_text)
 
-    # ============================
-    # 4) JSON OUTPUT
-    # ============================
+    # ======================================================
+    # 4) OUTPUT
+    # ======================================================
 
     return {
         "phan_loai_trieu_chung": symptom_type,
-        "ecg": {
-            "ket_luan_ecg": ecg_text
-        },
+        "ecg": {"ket_luan_ecg": ecg_text},
         "muc_nguy_co": fusion_json["muc_nguy_co"],
         "chan_doan_goi_y": fusion_json["chan_doan_goi_y"],
         "khuyen_cao": fusion_json["khuyen_cao"]
     }
 
+
 # ============================================================
-# RUN LOCAL
+# LOCAL RUN
 # ============================================================
 
 if __name__ == "__main__":
