@@ -6,9 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 import uvicorn
 
-# ==========================
-# FastAPI + CORS
-# ==========================
 app = FastAPI()
 
 app.add_middleware(
@@ -18,9 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==========================
-# OpenAI client
-# ==========================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ==========================
@@ -37,8 +31,7 @@ Bạn là chuyên gia tim mạch theo ESC 2023.
 - ST chênh / ST giảm
 - Sóng T
 - Q bệnh lý
-- Gợi ý STEMI / NSTEMI
-Kết luận 1–2 câu.
+Gợi ý STEMI / NSTEMI.
 """
 
 CLINICAL_PROMPT = """
@@ -63,7 +56,6 @@ Chỉ trả về duy nhất 1 từ:
 - it_goi_y
 """
 
-# Escape JSON bằng {{ }}
 FUSION_PROMPT = """
 Bạn là chuyên gia tim mạch ESC 2023.
 
@@ -76,7 +68,7 @@ Triệu chứng:
 Hãy đánh giá ESC:
 - Nguy cơ: thấp / trung bình / cao
 - Chẩn đoán gợi ý
-- 2 khuyến cáo ngắn gọn, súc tích, chuẩn ESC.
+- 2 khuyến cáo ngắn gọn chuẩn ESC.
 
 Trả về JSON DUY NHẤT:
 {{
@@ -86,9 +78,7 @@ Trả về JSON DUY NHẤT:
 }}
 """
 
-# ==========================
-# API
-# ==========================
+
 @app.post("/api/analyze")
 async def analyze(
     ecg_file: UploadFile,
@@ -102,7 +92,7 @@ async def analyze(
 ):
 
     # ==========================
-    # 1) Vision: đọc ECG (gpt-4o)
+    # 1) Vision: đọc ECG
     # ==========================
     raw = await ecg_file.read()
     b64 = base64.b64encode(raw).decode()
@@ -111,7 +101,10 @@ async def analyze(
         {"role": "system", "content": VISION_PROMPT},
         {"role": "user", "content": [
             {"type": "input_text", "text": "Đọc ECG sau:"},
-            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+            {
+                "type": "input_image",
+                "image": {"base64": b64}       # **** FIX LỖI QUAN TRỌNG ****
+            }
         ]}
     ]
 
@@ -120,10 +113,11 @@ async def analyze(
         input=vision_input,
     )
 
-    ecg_text = vision_res.output_text.strip()
+    # Đọc text đúng format SDK mới
+    ecg_text = vision_res.output[0].content[0].text.strip()
 
     # ==========================
-    # 2) Clinical symptoms
+    # 2) Triệu chứng
     # ==========================
     clinical_prompt = CLINICAL_PROMPT.format(
         loc=loc, quality=quality, trigger=trigger,
@@ -140,7 +134,7 @@ async def analyze(
         symptom_type = "it_goi_y"
 
     # ==========================
-    # 3) Fusion ESC (ép JSON)
+    # 3) Fusion JSON ESC
     # ==========================
     fusion_prompt = FUSION_PROMPT.format(
         ecg_text=ecg_text,
@@ -148,27 +142,28 @@ async def analyze(
     )
 
     fusion_res = client.responses.create(
-        model="gpt-4o",                 # BẮT BUỘC dùng gpt-4o để đảm bảo JSON
+        model="gpt-4o",
         input=fusion_prompt,
-        response_format={"type": "json_object"}   # ÉP JSON 100%
+        response_format={"type": "json_object"}
     )
 
-    fusion_json = json.loads(fusion_res.output_text)
+    try:
+        fusion_json = json.loads(fusion_res.output_text)
+    except:
+        fusion_json = {
+            "muc_nguy_co": "không xác định",
+            "chan_doan_goi_y": "",
+            "khuyen_cao": ["", ""]
+        }
 
-    # ==========================
-    # 4) Final output
-    # ==========================
     return {
         "ecg": ecg_text,
         "phan_loai_trieu_chung": symptom_type,
         "muc_nguy_co": fusion_json.get("muc_nguy_co", ""),
         "chan_doan_goi_y": fusion_json.get("chan_doan_goi_y", ""),
-        "khuyen_cao": fusion_json.get("khuyen_cao", [])
+        "khuyen_cao": fusion_json.get("khuyen_cao", []),
     }
 
 
-# ==========================
-# LOCAL RUN
-# ==========================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
